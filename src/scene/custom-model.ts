@@ -4,7 +4,7 @@
 // their browser (src/ui/model-store.ts). WoW's animation names (AnimationData)
 // are matched to the yard's states, and the yard's own names work too.
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { gltfLoader } from './gltf';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { Locomotion } from './character';
 
@@ -95,7 +95,7 @@ export async function loadModelSource(files: ModelFile[]): Promise<ModelSource> 
   const lost: string[] = [];
   manager.onError = (url) => { lost.push(fileName(url)); };
   try {
-    const gltf = await new GLTFLoader(manager).loadAsync(urls.get(main.name.toLowerCase())!);
+    const gltf = await gltfLoader(manager).loadAsync(urls.get(main.name.toLowerCase())!);
     return new ModelSource(gltf.scene, gltf.animations, /wow\.export/i.test(String(gltf.asset?.generator ?? '')), [...new Set(lost)]);
   } finally {
     for (const u of urls.values()) URL.revokeObjectURL(u);

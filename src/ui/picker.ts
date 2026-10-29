@@ -1,13 +1,11 @@
 // The first screen: pick a class (WoW's class icons), then one of its builds,
 // grouped by spec, with the build's talent trees drawn. Playing opens the yard
 // at ?class=<spec>&build=<build>.
-import type { Spec, SpecBuild } from '../engine/types';
-import { SPECS } from '../specs';
+import { SPEC_META, type BuildMeta, type SpecMeta } from '../specs/manifest.gen';
 import { DISCLAIMER_HTML, INSPIRATION_HTML, SUPPORT_HTML } from './disclaimer';
 import { iconHtml } from './icon';
 import { load } from './storage';
-import { talentTreesHtml } from './talent-tree';
-import { classKey, mainTree } from './talents-data';
+import { classKey } from './class-key';
 
 /** WoW's class order and colours. */
 export const CLASSES: { name: string; color: string }[] = [
@@ -25,15 +23,19 @@ const h = (tag: string, cls = '', html = '') => {
 const wowIcon = (name: string) => `<img class="wow-icon" src="${import.meta.env.BASE_URL}icons/${name}.jpg" alt="" draggable="false">`;
 const split = (s: string) => s.split('-').map((t) => [...t].reduce((a, d) => a + Number(d), 0));
 
-interface Group { title: string; icon: string | null; entries: { spec: Spec; build: SpecBuild }[] }
+interface Group { title: string; icon: string | null; entries: { spec: SpecMeta; build: BuildMeta }[] }
 
 /** A class's builds by spec; a class with one spec (rogue, warrior) is split by the tree each build puts most points in. */
-function groupsOf(className: string): Group[] {
-  const specs = SPECS.filter((s) => s.className === className);
+async function groupsOf(className: string): Promise<Group[]> {
+  // Only a chosen class needs its talent trees, so they load here and not on
+  // the first screen, and only that class's (src/ui/talents-data.ts).
+  const { loadLayout, mainTree } = await import('./talents-data');
+  const specs = SPEC_META.filter((s) => s.className === className);
   const cls = classKey(className);
+  await loadLayout(cls);
   const groups = new Map<string, Group>();
   for (const spec of specs) {
-    for (const build of spec.builds ?? []) {
+    for (const build of spec.builds) {
       const tree = build.talentString ? mainTree(cls, build.talentString) : null;
       const title = specs.length > 1 ? spec.specName : tree?.name ?? spec.specName;
       let g = groups.get(title);
@@ -50,7 +52,7 @@ export function showPicker(app: HTMLElement): void {
   const root = h('div', 'picker');
   app.append(root);
   const last = load<string>('fpy.class');
-  const lastSpec = SPECS.find((s) => s.id === last);
+  const lastSpec = SPEC_META.find((s) => s.id === last);
 
   const showClasses = () => {
     root.innerHTML = '';
@@ -59,10 +61,10 @@ export function showPicker(app: HTMLElement): void {
       h('div', 'disclaimer-box', DISCLAIMER_HTML));
     const grid = h('div', 'class-grid');
     for (const c of CLASSES) {
-      const count = SPECS.filter((s) => s.className === c.name).reduce((n, s) => n + (s.builds?.length ?? 0), 0);
+      const count = SPEC_META.filter((s) => s.className === c.name).reduce((n, s) => n + s.builds.length, 0);
       if (!count) continue;
       const btn = h('button', 'class-card', `${iconHtml(`class_${classKey(c.name)}`)}<b style="color:${c.color}">${c.name}</b><small>${count} builds</small>`);
-      btn.addEventListener('click', () => showBuilds(c.name, c.color));
+      btn.addEventListener('click', () => { void showBuilds(c.name, c.color); });
       grid.append(btn);
     }
     root.append(grid);
@@ -80,13 +82,14 @@ export function showPicker(app: HTMLElement): void {
     root.append(h('p', 'picker-note', `${SUPPORT_HTML}<br>Not affiliated with or endorsed by Blizzard Entertainment.`));
   };
 
-  const showBuilds = (className: string, color: string) => {
+  const showBuilds = async (className: string, color: string) => {
+    const groups = await groupsOf(className);
     root.innerHTML = '';
     const back = h('button', 'hud-btn picker-back', '‹ Classes');
     back.addEventListener('click', showClasses);
     root.append(back, h('h1', 'picker-title', `${iconHtml(`class_${classKey(className)}`)}<span style="color:${color}">${className}</span>`),
       h('p', 'picker-sub', 'Choose a build. Each one brings its talents, gear, action bar and the sims\' priority list for the glow.'));
-    for (const g of groupsOf(className)) {
+    for (const g of groups) {
       const sec = h('section', 'build-group');
       sec.append(h('h2', '', `${g.icon ? wowIcon(g.icon) : ''}${g.title}`));
       for (const { spec, build } of g.entries) {
@@ -102,8 +105,11 @@ export function showPicker(app: HTMLElement): void {
         const actions = h('div', 'build-actions');
         actions.append(talents, plan, play);
         const trees = h('div', 'build-trees hidden');
-        talents.addEventListener('click', () => {
-          if (!trees.innerHTML && build.talentString) trees.innerHTML = talentTreesHtml(classKey(className), build.talentString);
+        talents.addEventListener('click', async () => {
+          if (!trees.innerHTML && build.talentString) {
+            const { talentTreesHtml } = await import('./talent-tree');
+            trees.innerHTML = talentTreesHtml(classKey(className), build.talentString);
+          }
           trees.classList.toggle('hidden');
           talents.classList.toggle('active', !trees.classList.contains('hidden'));
         });

@@ -1,4 +1,4 @@
-// Builds src/ui/talent-layout.json: every class's three talent trees as the
+// Builds src/ui/talent-layout/<class>.json: every class's three talent trees as the
 // sims draw them (gunba's ui/core/talents/trees/<class>.json, the order the
 // talent strings use), with each talent's row, column, ranks, icon and text,
 // plus the tree's tab icon and background (downloaded to public/talent-bg/).
@@ -71,5 +71,8 @@ for (const cls of CLASSES) {
   }
   process.stdout.write(`${cls} `);
 }
-fs.writeFileSync('src/ui/talent-layout.json', JSON.stringify(out));
-console.log(`\nsrc/ui/talent-layout.json: ${CLASSES.length} classes${missing.length ? `; no icon for ${missing.join(', ')}` : ''}`);
+// One file per class rather than one of them all: a talent screen draws a
+// single class, so that is all it should have to fetch (src/ui/talents-data.ts).
+fs.mkdirSync('src/ui/talent-layout', { recursive: true });
+for (const [cls, trees] of Object.entries(out)) fs.writeFileSync(`src/ui/talent-layout/${cls}.json`, JSON.stringify(trees));
+console.log(`\nsrc/ui/talent-layout/: ${CLASSES.length} classes${missing.length ? `; no icon for ${missing.join(', ')}` : ''}`);

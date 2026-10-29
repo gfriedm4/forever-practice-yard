@@ -7,8 +7,10 @@
 import fs from 'node:fs';
 
 const map = JSON.parse(fs.readFileSync('src/ui/wow-icons.json', 'utf8'));
-// Talent and talent-tab icons from src/ui/talent-layout.json (tools/talent_layout.mjs).
-const layout = fs.existsSync('src/ui/talent-layout.json') ? JSON.parse(fs.readFileSync('src/ui/talent-layout.json', 'utf8')) : {};
+// Talent and talent-tab icons from src/ui/talent-layout/ (tools/talent_layout.mjs).
+const layout = fs.existsSync('src/ui/talent-layout') ? Object.fromEntries(fs.readdirSync('src/ui/talent-layout')
+  .filter((f) => f.endsWith('.json'))
+  .map((f) => [f.slice(0, -5), JSON.parse(fs.readFileSync(`src/ui/talent-layout/${f}`, 'utf8'))])) : {};
 const talentIcons = Object.values(layout).flat().flatMap((tree) => [tree.icon, ...tree.talents.map((t) => t.icon)]).filter(Boolean);
 fs.mkdirSync('public/icons', { recursive: true });
 let bytes = 0;

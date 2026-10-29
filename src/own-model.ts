@@ -4,7 +4,6 @@
 // optional and the yard's own stay the default. The files stay in this browser
 // (src/ui/model-store.ts); the site never sends or hosts them.
 import { loadModelSource, type ModelFile, type ModelSource } from './scene/custom-model';
-import { isMapExport, loadMapSource } from './scene/wow-map';
 import { deleteModel, getModel, putModel, type StoredModel } from './ui/model-store';
 
 const EXPORT_LINK = '<a href="https://github.com/Kruithne/wow.export" target="_blank" rel="noopener">wow.export</a>';
@@ -57,14 +56,20 @@ export class OwnModel {
   /** Reads the files; returns the ones to keep (a map export keeps only what the zone uses) and a label, or null. */
   private async build(files: ModelFile[], restoring = false): Promise<{ keep: ModelFile[]; label: string | null } | null> {
     try {
-      if (this.slot.kind === 'place' && isMapExport(files)) {
-        const map = await loadMapSource(files, restoring);
-        this.source?.dispose();
-        this.source = map.source;
-        const mb = map.keep.reduce((n, f) => n + f.data.size, 0) / 1e6;
-        this.status = [this.describe(map.source), `${mb.toFixed(0)} MB kept in this browser.`, ...map.notes].join(' ');
-        this.error = false;
-        return { keep: map.keep, label: map.label };
+      if (this.slot.kind === 'place') {
+        // A zone export is read by code of its own (./scene/wow-map.ts, and an
+        // OBJ reader with it): fetched here, where there are files to read,
+        // rather than by everyone who opens the yard.
+        const { isMapExport, loadMapSource } = await import('./scene/wow-map');
+        if (isMapExport(files)) {
+          const map = await loadMapSource(files, restoring);
+          this.source?.dispose();
+          this.source = map.source;
+          const mb = map.keep.reduce((n, f) => n + f.data.size, 0) / 1e6;
+          this.status = [this.describe(map.source), `${mb.toFixed(0)} MB kept in this browser.`, ...map.notes].join(' ');
+          this.error = false;
+          return { keep: map.keep, label: map.label };
+        }
       }
       const source = await loadModelSource(files);
       this.source?.dispose();

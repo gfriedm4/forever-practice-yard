@@ -6,7 +6,7 @@ import type { Unit } from './engine/types';
 import { Beast } from './scene/beast';
 import { Character, type Locomotion } from './scene/character';
 import { CustomModel } from './scene/custom-model';
-import { CustomPlace } from './scene/custom-place';
+import type { CustomPlace } from './scene/custom-place';
 import { Controls, DEFAULT_MOVE } from './scene/controls';
 import { Dummy } from './scene/dummy';
 import { Totems } from './scene/totems';
@@ -18,7 +18,7 @@ import { OnyxiaView } from './encounter-view';
 import type { EnemyView } from './scene/enemy';
 import { showFightReview } from './ui/fight-review';
 import { createWorld } from './scene/world';
-import { SPECS, specById } from './specs';
+import { SPEC_LOADERS, SPEC_META, specLook } from './specs/manifest.gen';
 import { UI, fmt } from './strings';
 import { Floaters } from './ui/floaters';
 import { addMissing, expandBar, fillExtraRows, slotShown } from './ui/bars';
@@ -27,13 +27,17 @@ import { SettingsDialog, claimKey, defaultPrefs, type Prefs } from './ui/setting
 import { raidPicker } from './ui/raid-picker';
 import { DISCLAIMER_SHORT_HTML } from './ui/disclaimer';
 import { TREE_VERSION, parseTalents } from './ui/talent-rules';
-import { classKey } from './ui/talents-data';
+import { classKey } from './ui/class-key';
+import { loadLayout } from './ui/talents-data';
 import { bindingFor, load, save, wheelBinding } from './ui/storage';
 
 // The class comes from the URL (?class=warrior), else the last one played; ?build= picks a build.
 const CLASS_KEY = 'fpy.class';
 const params = new URLSearchParams(location.search);
-const spec = specById(params.get('class') ?? load<string>(CLASS_KEY));
+const requested = params.get('class') ?? load<string>(CLASS_KEY);
+const specId = requested && SPEC_LOADERS[requested] ? requested : SPEC_META[0].id;
+// Just the spec being played, not all nine classes' abilities (./specs/manifest.gen.ts).
+const spec = await SPEC_LOADERS[specId]();
 save(CLASS_KEY, spec.id);
 document.title = `${spec.className} Practice Yard · WoW Forever`;
 // v5: four action bar rows before the stance bar (v4: warriors got a stance bar; stats are gear only since v3).
@@ -86,6 +90,8 @@ function applyBuild(id: string): boolean {
 const urlBuild = params.get('build');
 if (urlBuild && urlBuild !== prefs.options.build && applyBuild(urlBuild)) refillRows = true;
 // A shared link's own talents (Settings → Copy link), if they are a legal level 60 build.
+// Reading them is the one thing at startup that wants the talent trees, and only this class's.
+if (params.has('talents')) await loadLayout(classKey(spec.className));
 const urlTalents = params.has('talents') ? parseTalents(classKey(spec.className), params.get('talents')) : null;
 if (urlTalents !== null) { prefs.options.talents = urlTalents; prefs.options.talentsTree = TREE_VERSION; refillRows = true; }
 if (urlBuild || params.has('talents')) {
@@ -179,6 +185,8 @@ const ownSlots = [ownPlayer, ...Object.values(ownForms), ownDummy, ownYard, ownO
 let ownCharacter: CustomModel | null = null;
 const ownForm: { cat?: CustomModel | null; bear?: CustomModel | null } = {};
 let place: CustomPlace | null = null;
+/** Which call to applyPlace is the current one, so a slower earlier one gives way. */
+let placeTurn = 0;
 
 /** A fresh copy of a slot's model, hidden until it is the one in use; the old copy goes. */
 function figureOf(slot: OwnModel, old: CustomModel | null | undefined): CustomModel | null {
@@ -233,11 +241,20 @@ function dressDummy(dummy: Dummy): void {
 }
 ownDummy.onChange = () => { for (const d of dummies) if (d.dummy instanceof Dummy) dressDummy(d.dummy); };
 
-/** The yard built in code, or a place of yours around the dummies. */
-function applyPlace(): void {
+/**
+ * The yard built in code, or a place of yours around the dummies. Walking a
+ * place's floors needs a tree of bounding volumes (three-mesh-bvh, some 50 kB),
+ * so that code is fetched the first time there is a place to draw rather than
+ * by everyone who opens the yard.
+ */
+async function applyPlace(): Promise<void> {
+  const turn = ++placeTurn;
   place?.dispose();
   place = null;
   if (ownYard.on) {
+    const { CustomPlace } = await import('./scene/custom-place');
+    // The slot changed again while that was fetched; that call draws the place.
+    if (turn !== placeTurn) return;
     place = new CustomPlace(ownYard.source!, ownYard.anchor, ownYard.turns);
     world.scene.add(place.root);
     if (!ownYard.anchor) ownYard.setAnchor(place.anchor.toArray());
@@ -260,7 +277,7 @@ function standOnFloors(): void {
   if (!fight) for (const d of dummies) d.dummy.root.position.y = groundY(d.unit.x, d.unit.z);
   controls.y = groundY(controls.x, controls.z, controls.y);
 }
-ownYard.onChange = applyPlace;
+ownYard.onChange = () => { void applyPlace().catch((err) => console.error(err)); };
 ownYard.actions = [{
   label: 'Put the dummy here',
   title: "The floor where you stand becomes the yard's center, where the dummies stand",
@@ -355,7 +372,7 @@ function setFight(id: string): void {
     combat.encounter = true;
     fightView = new OnyxiaView(fight, {
       scene: world.scene, camera: world.camera, vfx, hud, floaters, controls, combat, enemies: dummies, modelUrl: MODEL_URL,
-      tankLook: tanking() ? null : specById('warrior').look, whelpTankLook: specById('warrior').look, healerLook: specById('priest-smite').look,
+      tankLook: tanking() ? null : specLook('warrior'), whelpTankLook: specLook('warrior'), healerLook: specLook('priest-smite'),
       playerPos, groundAt: (x, z) => groundY(x, z, 3), onEnd: (r) => showFightReview(app, r, () => fullReset()),
     });
     dragonSources();
@@ -411,7 +428,7 @@ combat.on('reset', () => { totems.clear(); syncMinion(); });
 // ------------------------------------------------------------------ HUD
 let pullTimers: number[] = [];
 const hud = new Hud(app, combat, prefs.bar, {
-  settings: () => settings.show(),
+  settings: () => { void settings.show(); },
   reset: () => fullReset(),
   pull: () => startPull(),
   fight: (id) => setFight(id),
@@ -496,7 +513,7 @@ settings.ownModel = (sec) => ownModelsSection(sec, ownSlots);
 
 // Switching class reloads the page with ?class=.
 settings.classes = {
-  list: SPECS.map((s) => ({ id: s.id, name: s.specName === 'WoW Forever' ? s.className : s.specName, group: s.className })),
+  list: SPEC_META.map((s) => ({ id: s.id, name: s.specName === 'WoW Forever' ? s.className : s.specName, group: s.className })),
   current: spec.id,
   pick: (id) => {
     save(CLASS_KEY, id);
@@ -805,8 +822,24 @@ function locomotion(moving: boolean, backwards: boolean, airborne: boolean, aimi
   return combat.moveSpeed() > 1.25 ? 'sprint' : 'run';
 }
 
+/** How often the yard is drawn. Above this the extra frames redraw the same
+ *  moment: the simulation, the HUD and the shadow map all cost the same again. */
+const RENDER_HZ = 60;
+const FRAME_STEP = 1 / RENDER_HZ;
+/** Time waited since the last drawn frame. */
+let since = 0;
+
 function frame(): void {
-  const dt = Math.min(0.1, clock.getDelta());
+  // Drawn at RENDER_HZ, not once per refresh: on a 240 Hz screen the yard was
+  // simulated and redrawn four times for every 60 Hz of movement, which only
+  // spends power and heats the machine. Waiting for a whole step (rather than
+  // carrying the remainder over) keeps the gap between frames even, so a screen
+  // that is not a multiple of RENDER_HZ gets a steady rate instead of judder.
+  requestAnimationFrame(frame);
+  since += Math.min(0.1, clock.getDelta());
+  if (since + 0.001 < FRAME_STEP) return;
+  const dt = Math.min(0.1, since);
+  since = 0;
   elapsed += dt;
   const move = controls.update(dt);
   if (dash) {
@@ -850,10 +883,16 @@ function frame(): void {
   totems.update(dt, elapsed);
   if (companion) updatePet(dt);
   world.update(dt, elapsed);
-  hud.update();
+  // A dialog covers the screen, and the HUD under it writes about sixty DOM
+  // properties every frame, reads back a tooltip's box and rebuilds its HTML.
+  // With Settings open that restyles an 1,800-node dialog each time, which is
+  // what makes its dropdowns stutter; the HUD catches up when it closes. The
+  // floaters keep going: they are a handful of elements, and they are the ones
+  // that clear the damage numbers away once they expire.
+  if (settings.open || welcomeOpen) hud.hideTooltip();
+  else hud.update();
   floaters.update();
   world.renderer.render(world.scene, world.camera);
-  requestAnimationFrame(frame);
 }
 
 /** The pet stands where the engine moved it: running to its target, fighting there, or at your side. */
@@ -875,14 +914,35 @@ window.addEventListener('resize', () => world.resize());
 if (prefs.encounter && prefs.encounter !== 'dummies') setFight(prefs.encounter);
 else hud.setFight('dummies');
 
+// The yard, the dummies and the HUD are ready, so draw them now rather than
+// waiting on the character model (~750 kB): Character stays quiet until its
+// model is in, and the effects' hand anchor falls back to the chest, so the
+// yard is drawn and playable while it arrives.
+//
+// The yard's own shaders first. The very first render has to build a dozen
+// shader programs and hand some 280 geometries to the GPU, which took ~175 ms
+// on this machine -- and it used to fall just after the loading screen came
+// down, so the screen went bare, sat still for a fifth of a second, and only
+// then showed the yard. compileAsync hands the programs to the driver, which
+// builds them off the main thread, and the draw below is what fills the GPU's
+// buffers; both happen while the loading screen is still up. A precompile that
+// fails is not worth the page, since the first render builds what is missing.
+await world.renderer
+  .compileAsync(world.scene, world.camera)
+  .catch((err: unknown) => console.warn('shaders were not precompiled', err));
+world.renderer.render(world.scene, world.camera);
+loading?.remove();
+requestAnimationFrame(frame);
 character.load(MODEL_URL, spec.look).then(() => {
-  loading?.remove();
   equip();
-  requestAnimationFrame(frame);
+  // Every shader the yard can need, compiled now that the character is in the
+  // scene: the first Sinister Strike of the session then draws straight away
+  // instead of stopping to build its shader.
+  vfx.prewarm(world.renderer, world.camera);
   if (!prefs.seenWelcome) showWelcome();
 }).catch((err) => {
   console.error(err);
-  if (loading) loading.textContent = 'Could not load the character model.';
+  hud.showError('Could not load the character model.');
 });
 
 // Debug handle for automated checks.

@@ -6,6 +6,7 @@
 // (or set QUATERNIUS_DIR; the default is ./downloads).
 import { NodeIO } from '@gltf-transform/core';
 import { prune, resample, dedup } from '@gltf-transform/functions';
+import { YARD_CLIPS, compress, disposeAnimation, withMeshopt } from './model_optimize.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -14,6 +15,9 @@ const ual1 = path.join(downloads, 'Universal Animation Library[Standard]/Unreal-
 const ual2 = path.join(downloads, 'Universal Animation Library 2 [Standard]/Unreal-Godot/UAL2_Standard.glb');
 const output = path.resolve('public/models/human.glb');
 
+// Which library each clip comes from. What actually ships is these names
+// filtered through YARD_CLIPS, so a clip listed here but not played by the yard
+// stays out of the model until character.ts asks for it.
 const FROM_UAL1 = [
   'Idle_Loop', 'Walk_Loop', 'Jog_Fwd_Loop', 'Sprint_Loop',
   'Jump_Start', 'Jump_Loop', 'Jump_Land', 'Roll',
@@ -29,21 +33,15 @@ const FROM_UAL2 = [
   'NinjaJump_Start',
 ];
 
-const io = new NodeIO();
+const io = await withMeshopt(new NodeIO());
 const doc = await io.read(ual1);
 const other = await io.read(ual2);
 const root = doc.getRoot();
 
-// Drop the UAL1 animations the yard does not use.
-// Samplers must go too, or prune keeps their accessors in the buffer.
-// (Accessors can be shared between clips, so prune decides which ones go.)
-const disposeAnimation = (anim) => {
-  for (const s of anim.listSamplers()) s.dispose();
-  for (const ch of anim.listChannels()) ch.dispose();
-  anim.dispose();
-};
+// Drop the UAL1 animations the yard does not play.
 for (const anim of root.listAnimations()) {
-  if (!FROM_UAL1.includes(anim.getName())) disposeAnimation(anim);
+  const name = anim.getName();
+  if (!FROM_UAL1.includes(name) || !YARD_CLIPS.includes(name)) disposeAnimation(anim);
 }
 
 // Copy the UAL2 clips onto the nodes with the same name.
@@ -56,7 +54,8 @@ const copyAccessor = (a) => doc.createAccessor(a.getName())
   .setBuffer(buffer);
 
 for (const anim of other.getRoot().listAnimations()) {
-  if (!FROM_UAL2.includes(anim.getName())) continue;
+  const name = anim.getName();
+  if (!FROM_UAL2.includes(name) || !YARD_CLIPS.includes(name)) continue;
   const copy = doc.createAnimation(anim.getName());
   for (const channel of anim.listChannels()) {
     const target = nodeByName.get(channel.getTargetNode()?.getName());
@@ -99,6 +98,9 @@ for (const anim of root.listAnimations()) {
 console.log(`dropped ${dropped} constant tracks`);
 
 await doc.transform(resample(), dedup(), prune());
+// Most of the file is animation keyframes; Meshopt packs those as well as the
+// geometry, and the yard decodes it (src/scene/gltf.ts).
+await compress(doc);
 fs.mkdirSync(path.dirname(output), { recursive: true });
 await io.write(output, doc);
 

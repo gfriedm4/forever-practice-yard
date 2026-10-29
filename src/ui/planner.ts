@@ -3,8 +3,7 @@
 // what WoW Forever changed in each talent (talent-notes.json, from the
 // research sheets), the sims' builds to start from or compare with, and a
 // link that plays the build in the practice yard.
-import type { Spec, SpecBuild } from '../engine/types';
-import { SPECS } from '../specs';
+import { SPEC_META, type BuildMeta, type SpecMeta } from '../specs/manifest.gen';
 import { CLASSES } from './picker';
 import { iconHtml } from './icon';
 import { load, save } from './storage';
@@ -14,12 +13,12 @@ import {
   levelFor, pointsOf, repairOrder, totalPoints,
 } from './talent-rules';
 import { talentTreesHtml } from './talent-tree';
-import { classKey, decode, describe, treesOf } from './talents-data';
+import { classKey, decode, describe, hasLayout, loadLayout, treesOf } from './talents-data';
 
 interface Note { new?: boolean; change?: string; was?: string }
 const notes = NOTES as Record<string, { talents: Record<string, Note>; removed: string[] }>;
 
-interface Preset { spec: Spec; build: SpecBuild }
+interface Preset { spec: SpecMeta; build: BuildMeta }
 interface Saved { o: string; tree: string }
 
 const h = (tag: string, cls = '', html = '') => {
@@ -33,15 +32,21 @@ const wowIcon = (name: string | null) => (name ? `<img class="wow-icon" src="${i
 const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
 
 const presetsOf = (cls: string): Preset[] =>
-  SPECS.filter((s) => classKey(s.className) === cls).flatMap((spec) => (spec.builds ?? []).filter((b) => b.talentString).map((build) => ({ spec, build })));
+  SPEC_META.filter((s) => classKey(s.className) === cls).flatMap((spec) => spec.builds.filter((b) => b.talentString).map((build) => ({ spec, build })));
 const presetId = (p: Preset) => `${p.spec.id}/${p.build.id}`;
 /** Talent points two builds spend differently. */
 const distance = (a: Points, b: Points) => a.reduce((n, tree, i) => n + tree.reduce((m, r, j) => m + Math.abs(r - b[i][j]), 0), 0);
 
-export function showPlanner(app: HTMLElement): void {
-  app.querySelector('.loading')?.remove();
+export async function showPlanner(app: HTMLElement): Promise<void> {
   document.title = 'Talent planner · Forever Practice Yard';
   const params = new URLSearchParams(location.search);
+  // The class to open, settled before anything is drawn so that its trees --
+  // and only its -- can be fetched while the loading screen is still up.
+  const asked = params.get('planner') ?? '';
+  const first = hasLayout(asked) ? asked : load<string>('fpy.planner') ?? 'warrior';
+  const start = hasLayout(first) ? first : 'warrior';
+  await loadLayout(start);
+  app.querySelector('.loading')?.remove();
   const root = h('div', 'picker planner');
   const tip = h('div', 'tal-tip');
   app.append(root, tip);
@@ -101,10 +106,10 @@ export function showPlanner(app: HTMLElement): void {
 
   for (const c of CLASSES) {
     const key = classKey(c.name);
-    if (!treesOf(key).length) continue;
+    if (!hasLayout(key)) continue;
     const btn = h('button', 'planner-class', `${iconHtml(`class_${key}`)}<span style="color:${c.color}">${c.name}</span>`);
     btn.dataset.cls = key;
-    btn.addEventListener('click', () => { if (key !== cls) openClass(key); });
+    btn.addEventListener('click', () => { if (key !== cls) void openClass(key).catch((err) => console.error(err)); });
     classRow.append(btn);
   }
 
@@ -304,7 +309,14 @@ export function showPlanner(app: HTMLElement): void {
   compareSel.addEventListener('change', () => { compare = byId(compareSel.value); draw(); });
 
   // ---------------------------------------------------------------- a class
-  const openClass = (key: string, link?: URLSearchParams) => {
+  /** Which call to openClass is the current one, so a slower earlier one gives way. */
+  let classTurn = 0;
+  const openClass = async (key: string, link?: URLSearchParams) => {
+    const turn = ++classTurn;
+    // Already in hand for the class the planner opened with; fetched here for
+    // any other the player picks from the row of classes.
+    await loadLayout(key);
+    if (turn !== classTurn) return;
     cls = key;
     from = null;
     guessed = false;
@@ -321,7 +333,5 @@ export function showPlanner(app: HTMLElement): void {
     draw();
   };
 
-  const asked = params.get('planner') ?? '';
-  const start = treesOf(asked).length ? asked : load<string>('fpy.planner') ?? 'warrior';
-  openClass(treesOf(start).length ? start : 'warrior', params);
+  await openClass(start, params);
 }

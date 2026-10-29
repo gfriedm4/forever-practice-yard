@@ -811,6 +811,84 @@ export class Vfx {
     return { update: (dt) => { t += dt; if (t >= seconds) { fn(); return false; } return true; }, dispose: () => {} };
   }
 
+  /**
+   * Makes one of every effect and has the renderer compile its shader now,
+   * while the loading screen is still up, instead of the first time the player
+   * casts something. Colours are uniforms rather than part of a shader, so one
+   * style of each effect covers the rest.
+   *
+   * What is made is then kept, hidden: a material holds its compiled program,
+   * and disposing it would take the program with it, so the hitch would come
+   * back on the next cast. Hidden objects are skipped when drawing, so they
+   * cost nothing per frame.
+   */
+  prewarm(renderer: THREE.WebGLRenderer, camera: THREE.PerspectiveCamera): void {
+    const keep = this.lives.length;
+    const before = new Set(this.scene.children);
+    // Well under the yard: the renderer only walks what is `visible`, so these
+    // have to stay visible until it has compiled them, and out of sight.
+    const at = new THREE.Vector3(0, -200, 0);
+    const from = new THREE.Vector3(0, -200, 1);
+
+    for (const style of ['fire', 'physical'] as VfxStyle[]) {
+      this.impact(at, style);
+      this.impact(at, style, { crit: true });
+      this.impact(at, style, { small: true });
+      this.fizzle(at, style);
+      this.tick(at, style);
+      this.nova(at, 2, style);
+      this.ground(at, 2, style, 1);
+      this.missile({ style, from, to: () => at, duration: 1 });
+      this.missile({ style, from, to: () => at, duration: 1, fromSky: true });
+      this.release(from, style);
+    }
+    for (const kind of ['arc', 'wide', 'thrust', 'claw', 'smash'] as StrikeKind[]) {
+      this.strike(at, from, 0xffffff, kind);
+      this.strike(at, from, 0xffffff, kind, true);
+    }
+    this.flash(at, 0xffffff);
+    this.spin(at);
+    this.wave(at, 2, 0xffffff);
+    this.wave(at, 2, 0xffffff, { flat: true });
+    this.thunderClap(at, 3);
+    this.shout(at, 0xffffff);
+    this.buff(at, [0xffffff]);
+    this.smokeBomb(at);
+    this.shield(at, 0xffffff);
+    this.shield(at, 0xffffff, true);
+    this.lightning(from, at, [0xffffff]);
+    this.orbs(at, 3, 0, [0xffffff]);
+
+    // Their Live entries go first, so nothing expires or disposes them, and
+    // they move into a group of their own: that keeps them apart from the
+    // yard's own hidden things (the forms the player is not in).
+    this.lives.length = keep;
+    const warm = new THREE.Group();
+    warm.name = 'vfx-prewarm';
+    for (const o of [...this.scene.children]) if (!before.has(o)) warm.add(o);
+    this.scene.add(warm);
+
+    // The shield's bubble belongs to this class, not to a one-off effect, so it
+    // goes back: left in the hidden group, a real shield would show nothing.
+    if (this.bubble) {
+      this.scene.add(this.bubble.mesh);
+      this.bubble.mesh.visible = false;
+    }
+
+    // The whole scene, not just this group: the group is in it, and the
+    // character's model has only now arrived, so its shaders are still to
+    // build. Everything else was compiled before the loading screen came down
+    // and is already in the renderer's cache, so asking again costs nothing.
+    //
+    // Compiled here and now, rather than with compileAsync: waiting on the
+    // renderer would leave a window in which a reset can dispose one of these
+    // materials -- after which it can no longer be asked whether it is ready.
+    renderer.compile(this.scene, camera);
+    warm.visible = false;
+    this.glow.clear();
+    this.smoke.clear();
+  }
+
   update(dt: number, camera: THREE.PerspectiveCamera, height: number): void {
     dt *= this.timeScale;
     // Size in pixels of one metre seen from one metre away.

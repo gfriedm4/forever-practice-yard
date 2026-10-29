@@ -2,6 +2,23 @@
 // models): ground, fence, pines, torches, banners.
 import * as THREE from 'three';
 
+/**
+ * A phone or a tablet: a touch screen with no mouse or stylus beside it. A
+ * laptop with a touch screen reports a fine pointer as well, so it is not one,
+ * and anything that cannot be asked counts as a desktop.
+ */
+const HANDHELD = typeof matchMedia === 'function'
+  && matchMedia('(pointer: coarse)').matches
+  && !matchMedia('(any-pointer: fine)').matches;
+
+/**
+ * How often the sun's shadow map is redrawn, whatever the screen's refresh
+ * rate. Half as often on a handheld: the shadow pass is a third of the yard's
+ * draw calls, and a shadow that follows the character a frame late at 30 Hz is
+ * not something anyone sees.
+ */
+const SHADOW_HZ = HANDHELD ? 30 : 60;
+
 export interface World {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -108,25 +125,108 @@ function sky(): THREE.Mesh {
   return new THREE.Mesh(geo, mat);
 }
 
-function pine(rnd: () => number): THREE.Group {
-  const g = new THREE.Group();
-  const height = 6 + rnd() * 6;
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.15, 0.28, height * 0.35, 6),
-    new THREE.MeshStandardMaterial({ color: 0x3b2a1e, roughness: 1 }),
-  );
-  trunk.position.y = height * 0.17;
-  g.add(trunk);
-  const green = new THREE.Color().setHSL(0.33 + rnd() * 0.05, 0.35, 0.16 + rnd() * 0.06);
-  const mat = new THREE.MeshStandardMaterial({ color: green, roughness: 0.95, flatShading: true });
-  for (let i = 0; i < 4; i++) {
-    const radius = (1.9 - i * 0.38) * (height / 9);
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(radius, height * 0.34, 7), mat);
-    cone.position.y = height * 0.25 + i * height * 0.19;
-    cone.rotation.y = rnd() * Math.PI;
-    cone.castShadow = true;
-    g.add(cone);
+/**
+ * Paints a colour onto every vertex of a geometry, so pieces of different
+ * colours can be drawn together under one material.
+ */
+function tint(geo: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
+  const n = geo.getAttribute('position').count;
+  const c = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { c[i * 3] = color.r; c[i * 3 + 1] = color.g; c[i * 3 + 2] = color.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  return geo;
+}
+
+/**
+ * Many geometries into one. Every mesh is a draw call of its own in the frame
+ * and another in the shadow map, and the yard's scenery is hundreds of little
+ * ones that never move: the trees alone were 230. Joined, each group is one.
+ * Only what this scenery's materials read is kept -- where the vertices are,
+ * which way they face, and the colours tint() painted. None of it is textured,
+ * so the texture coordinates go.
+ */
+function join(list: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const parts = list.map((g) => (g.index ? g.toNonIndexed() : g));
+  const colored = parts.some((g) => g.getAttribute('color'));
+  const total = parts.reduce((n, g) => n + g.getAttribute('position').count, 0);
+  const pos = new Float32Array(total * 3);
+  const nor = new Float32Array(total * 3);
+  const col = colored ? new Float32Array(total * 3) : null;
+  let o = 0;
+  for (const g of parts) {
+    const p = g.getAttribute('position');
+    pos.set(p.array as Float32Array, o);
+    nor.set(g.getAttribute('normal').array as Float32Array, o);
+    if (col) {
+      const c = g.getAttribute('color');
+      if (c) col.set(c.array as Float32Array, o); else col.fill(1, o, o + p.count * 3);
+    }
+    o += p.count * 3;
   }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  if (col) out.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return out;
+}
+
+/**
+ * A group of little meshes as one mesh per material, standing where they stood.
+ * The first mesh of a material says whether the joined one casts and takes
+ * shadows; in the yard every mesh sharing a material agrees on that.
+ */
+function weld(src: THREE.Object3D): THREE.Group {
+  src.updateMatrixWorld(true);
+  const by = new Map<THREE.Material, { parts: THREE.BufferGeometry[]; first: THREE.Mesh }>();
+  src.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const geo = (m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone()).applyMatrix4(m.matrixWorld);
+    const slot = by.get(m.material as THREE.Material);
+    if (slot) slot.parts.push(geo);
+    else by.set(m.material as THREE.Material, { parts: [geo], first: m });
+  });
+  const out = new THREE.Group();
+  for (const [material, { parts, first }] of by) {
+    const one = new THREE.Mesh(join(parts), material);
+    one.castShadow = first.castShadow;
+    one.receiveShadow = first.receiveShadow;
+    out.add(one);
+  }
+  return out;
+}
+
+/**
+ * The pines around the yard: every trunk in one mesh, every bough in another.
+ * Each tree keeps its own height, its own turn and its own green -- the green
+ * is painted on the vertices, so the lot still shares a single material.
+ */
+function forest(rnd: () => number, count: number): THREE.Group {
+  const trunks: THREE.BufferGeometry[] = [];
+  const boughs: THREE.BufferGeometry[] = [];
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < count; i++) {
+    const a = rnd() * Math.PI * 2;
+    const d = 19 + rnd() * 30;
+    const x = Math.sin(a) * d;
+    const z = Math.cos(a) * d;
+    const height = 6 + rnd() * 6;
+    trunks.push(new THREE.CylinderGeometry(0.15, 0.28, height * 0.35, 6)
+      .applyMatrix4(m.makeTranslation(x, height * 0.17, z)));
+    const green = new THREE.Color().setHSL(0.33 + rnd() * 0.05, 0.35, 0.16 + rnd() * 0.06);
+    for (let k = 0; k < 4; k++) {
+      const radius = (1.9 - k * 0.38) * (height / 9);
+      const cone = new THREE.ConeGeometry(radius, height * 0.34, 7);
+      cone.applyMatrix4(m.makeRotationY(rnd() * Math.PI));
+      cone.applyMatrix4(m.makeTranslation(x, height * 0.25 + k * height * 0.19, z));
+      boughs.push(tint(cone, green));
+    }
+  }
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(join(trunks), new THREE.MeshStandardMaterial({ color: 0x3b2a1e, roughness: 1 })));
+  const leaves = new THREE.Mesh(join(boughs), new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true, vertexColors: true }));
+  leaves.castShadow = true;
+  g.add(leaves);
   return g;
 }
 
@@ -192,32 +292,31 @@ function banner(color: number): THREE.Group {
   return g;
 }
 
-function fence(radius: number, gap: number): THREE.Group {
-  const g = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.95, flatShading: true });
+/** The ring of posts and rails around the yard, built as one mesh. */
+function fence(radius: number, gap: number): THREE.Mesh {
+  const parts: THREE.BufferGeometry[] = [];
+  const m = new THREE.Matrix4();
   const n = 40;
   const inGap = (a: number) => Math.abs(Math.atan2(Math.sin(a - Math.PI), Math.cos(a - Math.PI))) < gap;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2;
     if (inGap(a)) continue;
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.3, 0.18), wood);
-    post.position.set(Math.sin(a) * radius, 0.65, Math.cos(a) * radius);
-    post.rotation.y = a;
-    post.castShadow = true;
-    g.add(post);
+    parts.push(new THREE.BoxGeometry(0.18, 1.3, 0.18)
+      .applyMatrix4(m.makeRotationY(a))
+      .applyMatrix4(m.makeTranslation(Math.sin(a) * radius, 0.65, Math.cos(a) * radius)));
     const a2 = ((i + 1) / n) * Math.PI * 2;
     if (inGap(a2)) continue;
     const length = 2 * radius * Math.sin(Math.PI / n);
     const am = (a + a2) / 2;
     for (const y of [0.45, 0.95]) {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(length, 0.12, 0.06), wood);
-      rail.position.set(Math.sin(am) * radius * Math.cos(Math.PI / n), y, Math.cos(am) * radius * Math.cos(Math.PI / n));
-      rail.rotation.y = am + Math.PI / 2;
-      rail.castShadow = true;
-      g.add(rail);
+      parts.push(new THREE.BoxGeometry(length, 0.12, 0.06)
+        .applyMatrix4(m.makeRotationY(am + Math.PI / 2))
+        .applyMatrix4(m.makeTranslation(Math.sin(am) * radius * Math.cos(Math.PI / n), y, Math.cos(am) * radius * Math.cos(Math.PI / n))));
     }
   }
-  return g;
+  const mesh = new THREE.Mesh(join(parts), new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.95, flatShading: true }));
+  mesh.castShadow = true;
+  return mesh;
 }
 
 function props(rnd: () => number): THREE.Group {
@@ -264,10 +363,17 @@ function props(rnd: () => number): THREE.Group {
 }
 
 export function createWorld(container: HTMLElement): World {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  // What to ask the machine for. A phone draws this same yard into a screen of
+  // two or three times the pixel density with a GPU a fraction of the size: at
+  // the full pixel ratio and four-sample multisampling it shades about seven
+  // times the fragments a laptop does, which is the yard's real cost there --
+  // its own drawing is a millisecond of work a frame. Held at arm's length,
+  // little of what the leaner settings give up can be seen, and the fence, the
+  // pines and the character keep their shadows.
+  const renderer = new THREE.WebGLRenderer({ antialias: !HANDHELD, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, HANDHELD ? 1.5 : 2));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = HANDHELD ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
   container.appendChild(renderer.domElement);
@@ -290,11 +396,19 @@ export function createWorld(container: HTMLElement): World {
   rim.position.set(-12, 6, 30);
   scene.add(rim);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.setScalar(HANDHELD ? 1024 : 2048);
   const sc = sun.shadow.camera;
   sc.left = -18; sc.right = 18; sc.top = 18; sc.bottom = -18; sc.near = 1; sc.far = 70;
   sun.shadow.bias = -0.0004;
   sun.shadow.normalBias = 0.03;
+  // Half the yard's draw calls are the shadow pass, and left to itself three
+  // redraws it once per rendered frame -- on a 240 Hz screen, four times more
+  // often than anything in the yard moves. The map is refreshed on demand
+  // instead, at SHADOW_HZ in update(), which is still often enough for the
+  // casters that do move: the character, the dummies and the pet.
+  sun.shadow.autoUpdate = false;
+  sun.shadow.needsUpdate = true;
+  let shadowAt = -Infinity;
   scene.add(sun);
 
   // The yard itself, apart from the sky and the light: a place of your own can replace it.
@@ -334,14 +448,8 @@ export function createWorld(container: HTMLElement): World {
   env.add(fence(15, 0.22));
 
   const rnd = seeded(42);
-  for (let i = 0; i < 46; i++) {
-    const a = rnd() * Math.PI * 2;
-    const d = 19 + rnd() * 30;
-    const p = pine(rnd);
-    p.position.set(Math.sin(a) * d, 0, Math.cos(a) * d);
-    env.add(p);
-  }
-  env.add(props(rnd));
+  env.add(forest(rnd, 46));
+  env.add(weld(props(rnd)));
 
   const torches: ReturnType<typeof torch>[] = [];
   for (let i = 0; i < 6; i++) {
@@ -351,12 +459,16 @@ export function createWorld(container: HTMLElement): World {
     env.add(t.group);
     torches.push(t);
   }
+  // Both banners at once: welded, the two poles, their bars and their blades
+  // share a mesh each, and only the cloths stay apart for their colours.
+  const flags = new THREE.Group();
   for (const [x, z, color] of [[-4, 12.2, 0x7b1d1d], [4, 12.2, 0x1d3b7b]] as const) {
     const b = banner(color);
     b.position.set(x, 0, z);
     b.rotation.y = Math.PI;
-    env.add(b);
+    flags.add(b);
   }
+  env.add(weld(flags));
 
   function resize() {
     const w = container.clientWidth, h = container.clientHeight;
@@ -372,6 +484,7 @@ export function createWorld(container: HTMLElement): World {
     renderer, scene, camera, resize,
     setAmbience(kind) {
       const cave = kind === 'cave';
+      sun.shadow.needsUpdate = true;
       fog.color.setHex(cave ? 0x1c120e : 0x5d4a55);
       fog.near = cave ? 35 : 25;
       fog.far = cave ? 140 : 110;
@@ -383,6 +496,7 @@ export function createWorld(container: HTMLElement): World {
       renderer.setClearColor(cave ? 0x0e0907 : 0x000000);
     },
     setEnvironment(visible, grass = true) {
+      sun.shadow.needsUpdate = true;
       env.visible = visible;
       ground.visible = visible || grass;
       // Just under a place's own floors, so they do not flicker against it.
@@ -394,6 +508,10 @@ export function createWorld(container: HTMLElement): World {
         tc.light.intensity = 9 * f;
         tc.flame.scale.set(1, f * 1.1, 1);
       });
+      if (t - shadowAt >= 1 / SHADOW_HZ) {
+        shadowAt = t;
+        sun.shadow.needsUpdate = true;
+      }
     },
   };
 }

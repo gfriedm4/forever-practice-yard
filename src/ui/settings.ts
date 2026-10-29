@@ -12,7 +12,7 @@ import { DISCLAIMER_HTML, INSPIRATION_HTML, SUPPORT_HTML } from './disclaimer';
 import { raidPicker } from './raid-picker';
 import { MAX_POINTS, TREE_VERSION, canAdd, canRemove, encode, totalPoints } from './talent-rules';
 import { talentTreesHtml } from './talent-tree';
-import { classKey, decode, treesOf } from './talents-data';
+import { classKey, decode, loadLayout, treesOf } from './talents-data';
 
 export interface Prefs {
   stats: Stats;
@@ -116,7 +116,10 @@ export class SettingsDialog {
 
   get open(): boolean { return !this.overlay.classList.contains('hidden'); }
 
-  show(): void {
+  async show(): Promise<void> {
+    // The talent trees are drawn from a layout of their own, which the yard
+    // does not carry; this class's come in the first time Settings is opened.
+    await loadLayout(classKey(this.spec.className));
     this.render();
     this.overlay.classList.remove('hidden');
   }

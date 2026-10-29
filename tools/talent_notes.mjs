@@ -7,7 +7,9 @@
 // Usage: node tools/talent_notes.mjs
 import fs from 'node:fs';
 
-const layout = JSON.parse(fs.readFileSync('src/ui/talent-layout.json', 'utf8'));
+const layout = Object.fromEntries(fs.readdirSync('src/ui/talent-layout')
+  .filter((f) => f.endsWith('.json'))
+  .map((f) => [f.slice(0, -5), JSON.parse(fs.readFileSync(`src/ui/talent-layout/${f}`, 'utf8'))]));
 const camel = (s) => s.replace(/[^A-Za-z0-9 ]/g, '').split(' ').filter(Boolean)
   .map((w, i) => (i ? w[0].toUpperCase() : w[0].toLowerCase()) + w.slice(1)).join('');
 

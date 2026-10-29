@@ -2,7 +2,7 @@
 // (hood, mask, pauldrons, belt, weapons) and an animator that layers
 // upper-body attacks over leg locomotion, so it can strike while moving.
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { gltfLoader } from './gltf';
 import type { CharacterLook, WeaponType } from '../engine/types';
 
 /** Bones that belong to the upper-body layer. */
@@ -81,7 +81,7 @@ export class Character {
   private attachToBone: ((b: THREE.Object3D, build: (g: THREE.Group) => void) => THREE.Group) | null = null;
 
   async load(url: string, look: CharacterLook): Promise<void> {
-    const gltf = await new GLTFLoader().loadAsync(url);
+    const gltf = await gltfLoader().loadAsync(url);
     const model = gltf.scene;
     model.traverse((o) => {
       const m = o as THREE.SkinnedMesh;
@@ -109,6 +109,11 @@ export class Character {
 
     this.mixer = new THREE.AnimationMixer(model);
     for (const clip of gltf.animations) this.clips.set(clip.name, clip);
+    // The model carries only the clips named above (tools/model_optimize.mjs):
+    // one named here and left out of it would otherwise just never play.
+    const absent = [...new Set([...Object.values(LOCOMOTION).map((d) => d.clip), ...Object.values(ACTIONS).map((a) => a.clip)])]
+      .filter((name) => !this.clips.has(name));
+    if (absent.length) console.warn(`the character model has no ${absent.join(', ')}`);
     for (const [state, def] of Object.entries(LOCOMOTION) as [Locomotion, { clip: string; speed?: number }][]) {
       const clip = this.clips.get(def.clip);
       if (!clip) continue;

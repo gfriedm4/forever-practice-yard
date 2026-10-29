@@ -10,8 +10,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --port 5181",
     "model": "node tools/build_model.mjs",
+    "model:compress": "node tools/compress_model.mjs",
     "icons": "node tools/icons.mjs && node tools/wow_icons.mjs",
     "talents": "node tools/talent_layout.mjs",
+    "specs": "node tools/spec_manifest.mjs",
     "test": "esbuild tools/engine_check.ts --bundle --platform=node --format=esm --log-level=warning --outfile=node_modules/.cache/engine_check.mjs && node node_modules/.cache/engine_check.mjs"
   },
   "dependencies": {
@@ -20,9 +22,11 @@
   },
   "devDependencies": {
     "@gltf-transform/core": "^4.5.1",
+    "@gltf-transform/extensions": "^4.5.1",
     "@gltf-transform/functions": "^4.5.1",
     "@types/node": "^22.20.5",
     "@types/three": "^0.180.0",
+    "meshoptimizer": "^0.22.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.4"
   }

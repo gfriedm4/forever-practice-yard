@@ -13,7 +13,7 @@ import { shamanElemental, shamanEnhancement, shamanTank } from '../src/specs/sha
 import { warlockAffliction, warlockDemonology, warlockDestruction } from '../src/specs/warlock';
 import { warrior } from '../src/specs/warrior';
 import { SPECS } from '../src/specs';
-import { classKey, decode, pointsPerTree, treesOf } from '../src/ui/talents-data';
+import { classKey, decode, loadLayout, pointsPerTree, treesOf } from '../src/ui/talents-data';
 import {
   canAdd, canRemove, decodeOrder, defaultOrder, encode, encodeOrder, isValid, levelFor, parseTalents, pointsOf, repairOrder,
 } from '../src/ui/talent-rules';
@@ -28,6 +28,8 @@ import * as rogueTalents from '../src/specs/rogue/talents';
 import * as shamanTalents from '../src/specs/shaman/talents';
 import * as warlockTalents from '../src/specs/warlock/talents';
 import * as warriorTalents from '../src/specs/warrior/talents';
+
+await loadLayout();
 
 function run(spec: Spec, seconds: number, seed: number, stats = spec.stats, options: Record<string, number | boolean | string> = {}) {
   let s = seed;

@@ -18,6 +18,16 @@ const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''): 
 const shortTime = (s: number): string =>
   s >= 60 ? `${Math.ceil(s / 60)}m` : s >= 10 ? `${Math.ceil(s)}` : s >= 1.5 ? `${Math.ceil(s)}` : s.toFixed(1);
 
+// The HUD is gone over every frame, and most of what it shows holds still from
+// one frame to the next. Writing a property that already holds its value still
+// counts as a change to the browser, which then restyles the page: sixty times
+// a second, over whatever else is on screen. These write only on a real change.
+const setText = (el: HTMLElement, v: string): void => { if (el.textContent !== v) el.textContent = v; };
+const setClass = (el: HTMLElement, cls: string, on: boolean): void => { if (el.classList.contains(cls) !== on) el.classList.toggle(cls, on); };
+const setClassName = (el: HTMLElement, v: string): void => { if (el.className !== v) el.className = v; };
+const setStyle = (el: HTMLElement, prop: 'transform' | 'display' | 'left' | 'top', v: string): void => { if (el.style[prop] !== v) el.style[prop] = v; };
+const setVar = (el: HTMLElement, name: string, v: string): void => { if (el.style.getPropertyValue(name) !== v) el.style.setProperty(name, v); };
+
 interface Slot {
   el: HTMLElement; icon: HTMLElement; key: HTMLElement; cost: HTMLElement; cd: HTMLElement; cdText: HTMLElement;
   id: string | null; lastIcon: string | null;
@@ -45,9 +55,9 @@ class AuraRow {
         this.items.set(a.id, it);
       }
       const left = a.end - now;
-      it.time.textContent = Number.isFinite(left) ? shortTime(Math.max(0, left)) : '';
-      it.el.classList.toggle('expiring', Number.isFinite(left) && left < 3);
-      it.stacks.textContent = a.stacks && a.stacks > 1 ? String(a.stacks) : '';
+      setText(it.time, Number.isFinite(left) ? shortTime(Math.max(0, left)) : '');
+      setClass(it.el, 'expiring', Number.isFinite(left) && left < 3);
+      setText(it.stacks, a.stacks && a.stacks > 1 ? String(a.stacks) : '');
     }
     for (const [id, it] of this.items) {
       if (!seen.has(id)) { it.el.remove(); this.items.delete(id); }
@@ -125,6 +135,9 @@ export class Hud {
   private tooltipSlot = -1;
   /** What the tooltip describes: a hovered button or spellbook entry. */
   private tip: { id: string; el: HTMLElement } | null = null;
+  /** What the tooltip currently shows, so an unchanged one is left alone. */
+  private tipHtml = '';
+  private tipAnchor: HTMLElement | null = null;
   private extraRows: HTMLElement[] = [];
   private spellbook: HTMLElement;
   private spellList: HTMLElement;
@@ -460,13 +473,13 @@ export class Hud {
 
     // Target frame.
     const t: Unit | null = c.target;
-    this.targetFrame.classList.toggle('hidden', !t);
+    setClass(this.targetFrame, 'hidden', !t);
     if (t) {
-      this.targetName.textContent = t.name;
-      this.targetLevel.textContent = String(t.level);
+      setText(this.targetName, t.name);
+      setText(this.targetLevel, String(t.level));
       const pct = t.health / t.maxHealth;
-      this.targetBar.style.transform = `scaleX(${pct})`;
-      this.targetText.textContent = c.healthLocked ? '100%' : `${fmt(t.health)}  (${(pct * 100).toFixed(1)}%)`;
+      setStyle(this.targetBar, 'transform', `scaleX(${pct})`);
+      setText(this.targetText, c.healthLocked ? '100%' : `${fmt(t.health)}  (${(pct * 100).toFixed(1)}%)`);
       this.targetAuras.update(t.auras.values(), now);
     } else {
       this.targetAuras.update([], now);
@@ -474,49 +487,49 @@ export class Hud {
 
     // Player.
     this.playerAuras.update(p.auras.values(), now);
-    this.combatState.textContent = p.inCombat ? UI.inCombat : UI.outOfCombat;
-    this.combatState.classList.toggle('in', p.inCombat);
-    this.resourceFill.style.transform = `scaleX(${p.resource / p.maxResource})`;
-    this.resourceText.textContent = c.manaLocked && c.spec.resource === 'mana' ? `${fmt(p.maxResource)} (locked)`
-      : `${fmt(Math.floor(p.resource))} / ${fmt(p.maxResource)}`;
+    setText(this.combatState, p.inCombat ? UI.inCombat : UI.outOfCombat);
+    setClass(this.combatState, 'in', p.inCombat);
+    setStyle(this.resourceFill, 'transform', `scaleX(${p.resource / p.maxResource})`);
+    setText(this.resourceText, c.manaLocked && c.spec.resource === 'mana' ? `${fmt(p.maxResource)} (locked)`
+      : `${fmt(Math.floor(p.resource))} / ${fmt(p.maxResource)}`);
     const showHealth = c.enemyAttacks.on || !!c.spec.showHealth || c.encounter;
-    this.healthBar.style.display = showHealth ? '' : 'none';
+    setStyle(this.healthBar, 'display', showHealth ? '' : 'none');
     if (showHealth) {
-      this.healthFill.style.transform = `scaleX(${p.health / p.maxHealth})`;
-      this.healthText.textContent = c.playerHealthLocked ? `${fmt(p.maxHealth)} (locked)` : `${fmt(p.health)} / ${fmt(p.maxHealth)}`;
+      setStyle(this.healthFill, 'transform', `scaleX(${p.health / p.maxHealth})`);
+      setText(this.healthText, c.playerHealthLocked ? `${fmt(p.maxHealth)} (locked)` : `${fmt(p.health)} / ${fmt(p.maxHealth)}`);
     }
-    this.manaBar.style.display = p.maxMana > 0 && c.spec.resource !== 'mana' ? '' : 'none';
+    setStyle(this.manaBar, 'display', p.maxMana > 0 && c.spec.resource !== 'mana' ? '' : 'none');
     if (p.maxMana > 0) {
-      this.manaFill.style.transform = `scaleX(${p.mana / p.maxMana})`;
-      this.manaText.textContent = c.manaLocked ? `${fmt(p.maxMana)} (locked)` : `${fmt(Math.floor(p.mana))} / ${fmt(p.maxMana)}`;
+      setStyle(this.manaFill, 'transform', `scaleX(${p.mana / p.maxMana})`);
+      setText(this.manaText, c.manaLocked ? `${fmt(p.maxMana)} (locked)` : `${fmt(Math.floor(p.mana))} / ${fmt(p.maxMana)}`);
     }
     const cast = c.casting;
     const channel = c.channeling;
-    this.castBar.classList.toggle('show', !!cast || !!channel);
+    setClass(this.castBar, 'show', !!cast || !!channel);
     if (cast) {
-      this.castFill.style.transform = `scaleX(${Math.min(1, (now - cast.start) / (cast.end - cast.start))})`;
-      this.castText.textContent = `${c.ability(cast.id)?.name ?? ''}  ${Math.max(0, cast.end - now).toFixed(1)}`;
+      setStyle(this.castFill, 'transform', `scaleX(${Math.min(1, (now - cast.start) / (cast.end - cast.start))})`);
+      setText(this.castText, `${c.ability(cast.id)?.name ?? ''}  ${Math.max(0, cast.end - now).toFixed(1)}`);
     } else if (channel) {
-      this.castFill.style.transform = `scaleX(${Math.max(0, 1 - (now - channel.start) / (channel.end - channel.start))})`;
-      this.castText.textContent = `${c.ability(channel.id)?.name ?? ''}  ${Math.max(0, channel.end - now).toFixed(1)}`;
+      setStyle(this.castFill, 'transform', `scaleX(${Math.max(0, 1 - (now - channel.start) / (channel.end - channel.start))})`);
+      setText(this.castText, `${c.ability(channel.id)?.name ?? ''}  ${Math.max(0, channel.end - now).toFixed(1)}`);
     }
     const cp = c.comboPointsOn(t);
-    this.pips.forEach((pip, i) => pip.classList.toggle('on', i < cp));
+    this.pips.forEach((pip, i) => setClass(pip, 'on', i < cp));
     const mh = c.swingLeft('main'), oh = c.swingLeft('off');
-    this.swingMH.style.setProperty('--p', mh.total ? String(1 - mh.left / mh.total) : '0');
-    this.swingOH.style.setProperty('--p', oh.total ? String(1 - oh.left / oh.total) : '0');
+    setVar(this.swingMH, '--p', mh.total ? String(1 - mh.left / mh.total) : '0');
+    setVar(this.swingOH, '--p', oh.total ? String(1 - oh.left / oh.total) : '0');
     const rs = c.rangedLeft();
-    this.swingRanged.style.display = c.stats.ranged ? '' : 'none';
-    this.swingRanged.style.setProperty('--p', rs.total ? String(rs.winding ? 1 : Math.max(0, 1 - rs.left / rs.total)) : '0');
-    this.swingRanged.classList.toggle('winding', rs.winding);
+    setStyle(this.swingRanged, 'display', c.stats.ranged ? '' : 'none');
+    setVar(this.swingRanged, '--p', rs.total ? String(rs.winding ? 1 : Math.max(0, 1 - rs.left / rs.total)) : '0');
+    setClass(this.swingRanged, 'winding', rs.winding);
     // Weaving keeps both autos on: show both timers.
     const shootingOnly = c.autoShooting && !p.autoAttacking;
-    this.swingMH.style.display = shootingOnly ? 'none' : '';
-    this.swingOH.style.display = shootingOnly || !c.stats.offHand ? 'none' : '';
+    setStyle(this.swingMH, 'display', shootingOnly ? 'none' : '');
+    setStyle(this.swingOH, 'display', shootingOnly || !c.stats.offHand ? 'none' : '');
     const cue = this.suggestions ? c.spec.cue?.(c) ?? null : null;
-    this.cue.textContent = cue?.text ?? '';
-    this.cue.className = cue ? `cue show ${cue.tone}` : 'cue';
-    this.swingMH.parentElement!.classList.toggle('active', p.autoAttacking || c.autoShooting);
+    setText(this.cue, cue?.text ?? '');
+    setClassName(this.cue, cue ? `cue show ${cue.tone}` : 'cue');
+    setClass(this.swingMH.parentElement!, 'active', p.autoAttacking || c.autoShooting);
 
     // Action bar.
     const suggested = this.suggestions && c.spec.suggest ? c.spec.suggest(c) : null;
@@ -524,14 +537,14 @@ export class Hud {
       if (!s.id) continue;
       const st = c.buttonState(s.id);
       const cd = st.cooldown;
-      s.cd.style.setProperty('--p', cd.total ? String(cd.left / cd.total) : '0');
-      s.cdText.textContent = cd.left > 1.5 && cd.total > 1.6 ? shortTime(cd.left) : '';
-      s.cost.textContent = st.cost ? String(Math.round(st.cost)) : '';
-      s.el.classList.toggle('no-resource', st.noResource);
-      s.el.classList.toggle('unusable', !st.usable);
-      s.el.classList.toggle('out-of-range', st.outOfRange);
-      s.el.classList.toggle('glow', st.highlight);
-      s.el.classList.toggle('suggest', suggested === s.id);
+      setVar(s.cd, '--p', cd.total ? String(cd.left / cd.total) : '0');
+      setText(s.cdText, cd.left > 1.5 && cd.total > 1.6 ? shortTime(cd.left) : '');
+      setText(s.cost, st.cost ? String(Math.round(st.cost)) : '');
+      setClass(s.el, 'no-resource', st.noResource);
+      setClass(s.el, 'unusable', !st.usable);
+      setClass(s.el, 'out-of-range', st.outOfRange);
+      setClass(s.el, 'glow', st.highlight);
+      setClass(s.el, 'suggest', suggested === s.id);
       // Heroic Strike, Cleave, Maul, Raptor Strike: lit from the press until the swing lands, then a burst.
       const queued = c.queuedSwing === s.id;
       if (!queued && this.landed === s.id && s.el.classList.contains('queued')) {
@@ -539,7 +552,7 @@ export class Hud {
         void s.el.offsetWidth;
         s.el.classList.add('swung');
       }
-      s.el.classList.toggle('queued', queued);
+      setClass(s.el, 'queued', queued);
     }
     this.queuedShown = c.queuedSwing;
     this.landed = null;
@@ -558,17 +571,36 @@ export class Hud {
         cd ? `<span class="tt-row"><span></span><span>${cd >= 60 ? `${cd / 60} min` : `${cd} sec`} cooldown</span></span>` : '',
         `<span class="tt-desc">${a.description(c)}</span>`,
       ];
-      this.tooltip.innerHTML = lines.filter(Boolean).join('');
-      const r = this.tip.el.getBoundingClientRect();
-      this.tooltip.style.left = `${Math.min(innerWidth - 300, Math.max(8, r.left + r.width / 2 - 140))}px`;
-      this.tooltip.style.top = `${r.top - 10}px`;
-      this.tooltip.classList.add('show');
+      // Rebuilding this every frame reparsed the HTML and then asked for the
+      // button's box, which makes the browser lay the page out there and then.
+      // It only changes when the ability or what it says does.
+      const html = lines.filter(Boolean).join('');
+      if (html !== this.tipHtml || this.tipAnchor !== this.tip.el) {
+        this.tipHtml = html;
+        this.tipAnchor = this.tip.el;
+        this.tooltip.innerHTML = html;
+        const r = this.tip.el.getBoundingClientRect();
+        setStyle(this.tooltip, 'left', `${Math.min(innerWidth - 300, Math.max(8, r.left + r.width / 2 - 140))}px`);
+        setStyle(this.tooltip, 'top', `${r.top - 10}px`);
+      }
+      setClass(this.tooltip, 'show', true);
     } else {
-      this.tooltip.classList.remove('show');
+      this.hideTooltip();
     }
 
-    if (performance.now() > this.errorUntil) this.error.classList.remove('show');
+    if (performance.now() > this.errorUntil) setClass(this.error, 'show', false);
     this.updateMeter();
+  }
+
+  /**
+   * Takes the tooltip away. The yard calls this while a dialog is up: the HUD
+   * is not updated then, so a tooltip left over from the button the pointer
+   * was on would otherwise sit on top of the dialog until the dialog closes.
+   */
+  hideTooltip(): void {
+    setClass(this.tooltip, 'show', false);
+    this.tipHtml = '';
+    this.tipAnchor = null;
   }
 
   private meterTick = 0;
